@@ -1,4 +1,7 @@
 __pycache__/
 *.py[cod]
 .repotrim/
-
+build/
+dist/
+*.egg-info/
+.install-test/
