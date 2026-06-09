@@ -11,7 +11,8 @@ from rich.table import Table
 from .log_compressor import compress_log
 from .models import LogSummary, ScanResult, TaskResult
 from .packet_generator import generate_packet
-from .ranker import rank_files
+from .relevance_ranker import rank_scanned_files
+from .reporter import render_task_report
 from .scanner import scan_repo
 from .utils import cache_dir, percent_savings, read_json
 
@@ -46,17 +47,17 @@ def scan(repo_path: Path = typer.Argument(Path("."), help="Repository path to sc
     result = scan_repo(repo_path)
     console.print("\n[bold]RepoTrim Scan Report[/bold]\n")
     console.print(f"Repo path: {result.repo_path}")
-    console.print(f"Files scanned: {result.total_files_scanned}")
-    console.print(f"Files ignored: {result.total_files_ignored}")
-    console.print(f"Estimated full repo tokens: {result.total_estimated_tokens:,}")
+    console.print(f"Files scanned: {result.files_scanned}")
+    console.print(f"Files ignored: {result.files_ignored}")
+    console.print(f"Estimated full repo tokens: {result.total_tokens:,}")
 
-    largest = sorted(result.files, key=lambda file: file.estimated_tokens, reverse=True)[:5]
+    largest = result.largest_files(5)
     if largest:
         console.print("\n[bold]Largest included files:[/bold]")
         for index, file in enumerate(largest, start=1):
             console.print(f"{index}. {file.relative_path} - {file.estimated_tokens:,} tokens")
 
-    ignored_folders = sorted({item.path.split("/")[0] for item in result.ignored if "directory" in item.reason or "inside ignored" in item.reason})
+    ignored_folders = sorted({item.relative_path for item in result.ignored if "directory" in item.reason})
     if ignored_folders:
         console.print("\n[bold]Ignored folders:[/bold]")
         for folder in ignored_folders[:20]:
@@ -69,26 +70,15 @@ def scan(repo_path: Path = typer.Argument(Path("."), help="Repository path to sc
 
 
 @app.command()
-def task(task_description: str = typer.Argument(..., help="Coding task to optimize context for.")) -> None:
-    """Rank scanned files by relevance to a coding task."""
-    scan_result = _load_scan()
+def task(
+    task_description: str = typer.Argument(..., help="Coding task to optimize context for."),
+    path: Path = typer.Option(Path("."), "--path", help="Repository path to scan."),
+) -> None:
+    """Scan, rank, and report files relevant to a coding task."""
+    scan_result = scan_repo(path)
     log_summary = _load_log_optional()
-    result = rank_files(scan_result, task_description, log_summary)
-    selected_tokens = sum(item.file.estimated_tokens for item in result.ranked_files[:5])
-    savings = percent_savings(selected_tokens, scan_result.total_estimated_tokens)
-
-    console.print("\n[bold]Task:[/bold]")
-    console.print(task_description)
-    console.print("\n[bold]Top relevant files:[/bold]")
-    for index, ranked in enumerate(result.ranked_files[:5], start=1):
-        console.print(f"{index}. {ranked.file.relative_path}")
-        console.print(f"   Score: {ranked.score}")
-        console.print(f"   Reasons: {', '.join(ranked.reasons[:5]) or 'ranked by task relevance'}\n")
-
-    console.print("[bold]Estimated selected context:[/bold]")
-    console.print(f"Top 5 files: {selected_tokens:,} tokens")
-    console.print(f"Full repo: {scan_result.total_estimated_tokens:,} tokens")
-    console.print(f"Estimated savings: {savings:.1f}%")
+    result = rank_scanned_files(scan_result, task_description, log_summary)
+    console.print("\n" + render_task_report(scan_result, result))
 
 
 @app.command()

@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import fnmatch
 import os
 import re
 from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config
+from .ignore_rules import ignore_reason
 from .models import FileInfo, IgnoredPath, ScanResult
 from .tokenizer import estimate_tokens
 from .utils import ensure_cache_dir, write_json
@@ -36,28 +36,19 @@ SYMBOL_PATTERNS: dict[str, list[re.Pattern[str]]] = {
 
 
 def should_ignore_path(path: Path, repo_path: Path) -> str | None:
-    name = path.name
-    lower_name = name.lower()
-    parts = {part.lower() for part in path.relative_to(repo_path).parts}
+    return ignore_reason(path, repo_path)
 
-    if path.is_dir() and lower_name in config.IGNORED_DIRECTORIES:
-        return f"ignored directory: {name}"
-    if any(marker in lower_name for marker in config.SECRET_NAME_MARKERS):
-        return "secret-looking path"
-    if path.is_file():
-        if any(part in config.IGNORED_DIRECTORIES for part in parts):
-            return "inside ignored directory"
-        if any(fnmatch.fnmatch(name, pattern) for pattern in config.IGNORED_FILE_PATTERNS):
-            return "ignored file pattern"
-        if path.suffix.lower() not in config.SUPPORTED_EXTENSIONS:
-            return "unsupported extension"
-        try:
-            size = path.stat().st_size
-        except OSError:
-            return "could not stat file"
-        if size > config.MAX_FILE_SIZE_BYTES:
-            return "file larger than 500 KB"
-    return None
+
+def categorize_file(relative_path: str, extension: str) -> str:
+    parts = {part.lower() for part in Path(relative_path).parts}
+    name = Path(relative_path).name.lower()
+    if "test" in name or "tests" in parts or "test" in parts or name.startswith("spec"):
+        return "test"
+    if name in {"requirements.txt", "pyproject.toml", "setup.py", "setup.cfg", "tox.ini"} or extension in {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg"}:
+        return "config"
+    if extension == ".md":
+        return "docs"
+    return "source"
 
 
 def read_text_safely(path: Path) -> str | None:
@@ -95,9 +86,10 @@ def make_file_info(path: Path, repo_path: Path, text: str) -> FileInfo:
     extension = path.suffix.lower()
     language = config.LANGUAGE_BY_EXTENSION.get(extension, "text")
     lines = text.splitlines()
+    relative_path = path.relative_to(repo_path).as_posix()
     return FileInfo(
         path=str(path.resolve()),
-        relative_path=path.relative_to(repo_path).as_posix(),
+        relative_path=relative_path,
         extension=extension,
         language=language,
         size_bytes=path.stat().st_size,
@@ -106,6 +98,8 @@ def make_file_info(path: Path, repo_path: Path, text: str) -> FileInfo:
         first_lines=lines[:30],
         symbols=extract_symbols(text, language),
         modified_time=path.stat().st_mtime,
+        category=categorize_file(relative_path, extension),
+        reason="supported readable text file",
     )
 
 
@@ -121,7 +115,8 @@ def scan_repo(repo_path: Path) -> ScanResult:
             dir_path = root_path / dirname
             reason = should_ignore_path(dir_path, repo_path)
             if reason:
-                ignored.append(IgnoredPath(path=dir_path.relative_to(repo_path).as_posix(), reason=reason))
+                relative = dir_path.relative_to(repo_path).as_posix()
+                ignored.append(IgnoredPath(path=str(dir_path.resolve()), relative_path=relative, reason=reason))
             else:
                 kept_dirs.append(dirname)
         dirnames[:] = kept_dirs
@@ -130,11 +125,13 @@ def scan_repo(repo_path: Path) -> ScanResult:
             path = root_path / filename
             reason = should_ignore_path(path, repo_path)
             if reason:
-                ignored.append(IgnoredPath(path=path.relative_to(repo_path).as_posix(), reason=reason))
+                relative = path.relative_to(repo_path).as_posix()
+                ignored.append(IgnoredPath(path=str(path.resolve()), relative_path=relative, reason=reason))
                 continue
             text = read_text_safely(path)
             if text is None:
-                ignored.append(IgnoredPath(path=path.relative_to(repo_path).as_posix(), reason="binary or unreadable"))
+                relative = path.relative_to(repo_path).as_posix()
+                ignored.append(IgnoredPath(path=str(path.resolve()), relative_path=relative, reason="binary or unreadable"))
                 continue
             files.append(make_file_info(path, repo_path, text))
 
@@ -147,5 +144,5 @@ def scan_repo(repo_path: Path) -> ScanResult:
         files=files,
         ignored=ignored,
     )
-    write_json(ensure_cache_dir() / "scan.json", result.to_dict())
+    write_json(ensure_cache_dir(repo_path) / "scan.json", result.to_dict())
     return result

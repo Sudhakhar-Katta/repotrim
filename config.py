@@ -2,29 +2,6 @@
 
 from __future__ import annotations
 
-IGNORED_DIRECTORIES = {
-    ".git",
-    "node_modules",
-    "bin",
-    "obj",
-    "dist",
-    "build",
-    "coverage",
-    ".vscode",
-    ".idea",
-    ".next",
-    ".nuxt",
-    "target",
-    "out",
-    ".cache",
-    "pytest_cache",
-    "__pycache__",
-    "venv",
-    ".venv",
-    "env",
-    ".repotrim",
-}
-
 IGNORED_FILE_PATTERNS = {
     "package-lock.json",
     "yarn.lock",
@@ -51,8 +28,6 @@ IGNORED_FILE_PATTERNS = {
     ".env.production",
 }
 
-SECRET_NAME_MARKERS = ("secret", "key", "credential", ".env", "token")
-
 SUPPORTED_EXTENSIONS = {
     ".py",
     ".js",
@@ -77,6 +52,10 @@ SUPPORTED_EXTENSIONS = {
     ".yml",
     ".md",
     ".sql",
+    ".txt",
+    ".toml",
+    ".ini",
+    ".cfg",
 }
 
 LANGUAGE_BY_EXTENSION = {
@@ -103,6 +82,10 @@ LANGUAGE_BY_EXTENSION = {
     ".yml": "yaml",
     ".md": "markdown",
     ".sql": "sql",
+    ".txt": "text",
+    ".toml": "toml",
+    ".ini": "text",
+    ".cfg": "text",
 }
 
 STOP_WORDS = {
@@ -127,6 +110,10 @@ STOP_WORDS = {
     "to",
     "with",
     "fix",
+    "add",
+    "change",
+    "make",
+    "work",
 }
 
 KEYWORD_VARIANTS = {

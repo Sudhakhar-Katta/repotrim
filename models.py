@@ -18,6 +18,8 @@ class FileInfo:
     first_lines: list[str]
     symbols: list[str]
     modified_time: float
+    category: str = "source"
+    reason: str = "supported text file"
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FileInfo":
@@ -30,7 +32,13 @@ class FileInfo:
 @dataclass
 class IgnoredPath:
     path: str
+    relative_path: str
     reason: str
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "IgnoredPath":
+        relative_path = data.get("relative_path", data["path"])
+        return cls(path=data.get("path", relative_path), relative_path=relative_path, reason=data["reason"])
 
     def to_dict(self) -> dict[str, str]:
         return asdict(self)
@@ -46,10 +54,33 @@ class ScanResult:
     files: list[FileInfo] = field(default_factory=list)
     ignored: list[IgnoredPath] = field(default_factory=list)
 
+    @property
+    def scanned_files(self) -> list[FileInfo]:
+        return self.files
+
+    @property
+    def ignored_files(self) -> list[IgnoredPath]:
+        return self.ignored
+
+    @property
+    def files_scanned(self) -> int:
+        return len(self.files)
+
+    @property
+    def files_ignored(self) -> int:
+        return len(self.ignored)
+
+    @property
+    def total_tokens(self) -> int:
+        return self.total_estimated_tokens
+
+    def largest_files(self, limit: int = 5) -> list[FileInfo]:
+        return sorted(self.files, key=lambda file: file.estimated_tokens, reverse=True)[:limit]
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ScanResult":
         files = [FileInfo.from_dict(item) for item in data.get("files", [])]
-        ignored = [IgnoredPath(**item) for item in data.get("ignored", [])]
+        ignored = [IgnoredPath.from_dict(item) for item in data.get("ignored", [])]
         return cls(
             repo_path=data["repo_path"],
             created_at=data["created_at"],
@@ -95,13 +126,20 @@ class TaskResult:
     task_description: str
     keywords: list[str]
     ranked_files: list[RankedFile]
+    intent: str = "general_code_task"
+    primary_files: list[RankedFile] = field(default_factory=list)
+    supporting_files: list[RankedFile] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskResult":
+        ranked_files = [RankedFile.from_dict(item) for item in data.get("ranked_files", [])]
         return cls(
             task_description=data["task_description"],
             keywords=list(data.get("keywords", [])),
-            ranked_files=[RankedFile.from_dict(item) for item in data.get("ranked_files", [])],
+            ranked_files=ranked_files,
+            intent=data.get("intent", "general_code_task"),
+            primary_files=[RankedFile.from_dict(item) for item in data.get("primary_files", [])],
+            supporting_files=[RankedFile.from_dict(item) for item in data.get("supporting_files", [])],
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -109,6 +147,9 @@ class TaskResult:
             "task_description": self.task_description,
             "keywords": self.keywords,
             "ranked_files": [item.to_dict() for item in self.ranked_files],
+            "intent": self.intent,
+            "primary_files": [item.to_dict() for item in self.primary_files],
+            "supporting_files": [item.to_dict() for item in self.supporting_files],
         }
 
 
