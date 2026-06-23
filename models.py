@@ -20,6 +20,8 @@ class FileInfo:
     modified_time: float
     category: str = "source"
     reason: str = "supported text file"
+    imports: list[str] = field(default_factory=list)
+    comments: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "FileInfo":
@@ -53,6 +55,10 @@ class ScanResult:
     total_estimated_tokens: int
     files: list[FileInfo] = field(default_factory=list)
     ignored: list[IgnoredPath] = field(default_factory=list)
+    current_working_directory: str = ""
+    files_discovered: int = 0
+    extensions_found: dict[str, int] = field(default_factory=dict)
+    files_unreadable: int = 0
 
     @property
     def scanned_files(self) -> list[FileInfo]:
@@ -89,6 +95,10 @@ class ScanResult:
             total_estimated_tokens=data["total_estimated_tokens"],
             files=files,
             ignored=ignored,
+            current_working_directory=data.get("current_working_directory", data["repo_path"]),
+            files_discovered=data.get("files_discovered", len(files) + len(ignored)),
+            extensions_found=dict(data.get("extensions_found", {})),
+            files_unreadable=data.get("files_unreadable", 0),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -100,6 +110,10 @@ class ScanResult:
             "total_estimated_tokens": self.total_estimated_tokens,
             "files": [file.to_dict() for file in self.files],
             "ignored": [item.to_dict() for item in self.ignored],
+            "current_working_directory": self.current_working_directory,
+            "files_discovered": self.files_discovered,
+            "extensions_found": self.extensions_found,
+            "files_unreadable": self.files_unreadable,
         }
 
 
@@ -108,6 +122,7 @@ class RankedFile:
     file: FileInfo
     score: int
     reasons: list[str]
+    matched_terms: list[str] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "RankedFile":
@@ -115,10 +130,39 @@ class RankedFile:
             file=FileInfo.from_dict(data["file"]),
             score=data["score"],
             reasons=list(data.get("reasons", [])),
+            matched_terms=list(data.get("matched_terms", [])),
         )
 
     def to_dict(self) -> dict[str, Any]:
-        return {"file": self.file.to_dict(), "score": self.score, "reasons": self.reasons}
+        return {"file": self.file.to_dict(), "score": self.score, "reasons": self.reasons, "matched_terms": self.matched_terms}
+
+
+@dataclass
+class SemanticChunkMatch:
+    chunk_id: str
+    file_path: str
+    kind: str
+    symbol: str
+    start_line: int
+    end_line: int
+    text: str
+    similarity: float
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SemanticChunkMatch":
+        return cls(
+            chunk_id=data["chunk_id"],
+            file_path=data["file_path"],
+            kind=data["kind"],
+            symbol=data.get("symbol", ""),
+            start_line=int(data["start_line"]),
+            end_line=int(data["end_line"]),
+            text=data["text"],
+            similarity=float(data["similarity"]),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
 
 
 @dataclass
@@ -129,6 +173,10 @@ class TaskResult:
     intent: str = "general_code_task"
     primary_files: list[RankedFile] = field(default_factory=list)
     supporting_files: list[RankedFile] = field(default_factory=list)
+    glossary_terms: list[str] = field(default_factory=list)
+    confidence: str = "none"
+    context_only_files: list[str] = field(default_factory=list)
+    semantic_chunks: list[SemanticChunkMatch] = field(default_factory=list)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "TaskResult":
@@ -140,6 +188,10 @@ class TaskResult:
             intent=data.get("intent", "general_code_task"),
             primary_files=[RankedFile.from_dict(item) for item in data.get("primary_files", [])],
             supporting_files=[RankedFile.from_dict(item) for item in data.get("supporting_files", [])],
+            glossary_terms=list(data.get("glossary_terms", [])),
+            confidence=data.get("confidence", "none"),
+            context_only_files=list(data.get("context_only_files", [])),
+            semantic_chunks=[SemanticChunkMatch.from_dict(item) for item in data.get("semantic_chunks", [])],
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -150,6 +202,10 @@ class TaskResult:
             "intent": self.intent,
             "primary_files": [item.to_dict() for item in self.primary_files],
             "supporting_files": [item.to_dict() for item in self.supporting_files],
+            "glossary_terms": self.glossary_terms,
+            "confidence": self.confidence,
+            "context_only_files": self.context_only_files,
+            "semantic_chunks": [item.to_dict() for item in self.semantic_chunks],
         }
 
 

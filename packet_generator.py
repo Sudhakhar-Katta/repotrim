@@ -1,38 +1,23 @@
-"""Generate AI-ready context packets from scan, task, and optional log data."""
+"""Generate AI-ready context packets from ranked task results."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from . import config
-from .models import FileInfo, LogSummary, ScanResult, TaskResult
+from .models import LogSummary, RankedFile, ScanResult, TaskResult
 from .scanner import read_text_safely
 from .tokenizer import estimate_tokens
-from .utils import percent_savings
+from .utils import ensure_cache_dir
 
 
 @dataclass
-class ExtractedContext:
-    relative_path: str
-    language: str
-    estimated_tokens: int
-    mode: str
+class PacketFile:
+    ranked: RankedFile
     content: str
-
-
-def _merge_ranges(ranges: list[tuple[int, int]]) -> list[tuple[int, int]]:
-    if not ranges:
-        return []
-    ranges.sort()
-    merged = [ranges[0]]
-    for start, end in ranges[1:]:
-        last_start, last_end = merged[-1]
-        if start <= last_end + 1:
-            merged[-1] = (last_start, max(last_end, end))
-        else:
-            merged.append((start, end))
-    return merged
+    truncated: bool = False
 
 
 def _code_fence_language(language: str) -> str:
@@ -52,157 +37,168 @@ def _code_fence_language(language: str) -> str:
     }.get(language, "")
 
 
-def extract_context(file: FileInfo, keywords: list[str], log_summary: LogSummary | None = None) -> ExtractedContext:
-    text = read_text_safely(Path(file.path)) or ""
-    if file.estimated_tokens <= config.SMALL_FILE_TOKEN_LIMIT:
-        return ExtractedContext(file.relative_path, file.language, estimate_tokens(text), "full file", text)
-
-    lines = text.splitlines()
-    ranges = [(0, min(40, len(lines)))]
-    match_terms = [item.lower() for item in keywords]
-    if log_summary:
-        match_terms.extend(item.lower() for item in log_summary.mentioned_files)
-        match_terms.extend(item.lower() for item in log_summary.mentioned_symbols)
-
-    for index, line in enumerate(lines):
-        lower = line.lower()
-        if any(term and term in lower for term in match_terms):
-            start = max(0, index - config.SNIPPET_LINE_WINDOW)
-            end = min(len(lines), index + config.SNIPPET_LINE_WINDOW + 1)
-            ranges.append((start, end))
-
-    chunks: list[str] = []
-    token_budget = 0
-    for start, end in _merge_ranges(ranges):
-        chunk = "\n".join(lines[start:end])
-        chunk_tokens = estimate_tokens(chunk)
-        if token_budget + chunk_tokens > config.MAX_SNIPPET_TOKENS_PER_FILE and chunks:
-            break
-        chunks.append(f"# Lines {start + 1}-{end}\n{chunk}")
-        token_budget += chunk_tokens
-
-    content = "\n\n# ...\n\n".join(chunks)
-    return ExtractedContext(file.relative_path, file.language, estimate_tokens(content), "snippets", content)
+def _code_fence(content: str) -> str:
+    longest = max((len(match.group(0)) for match in re.finditer(r"`+", content)), default=0)
+    return "`" * max(3, longest + 1)
 
 
-def investigation_steps(keywords: list[str]) -> list[str]:
-    words = set(keywords)
-    if words & {"update", "save", "saved", "saving"}:
-        return [
-            "Check where the frontend sends the update request.",
-            "Check the request payload/DTO.",
-            "Check the backend update endpoint.",
-            "Check model/entity mapping.",
-            "Check persistence/database save call.",
-        ]
-    if words & {"login", "signin", "auth", "authentication"}:
-        return [
-            "Check auth route/controller.",
-            "Check token/session handling.",
-            "Check frontend login form.",
-            "Check redirect or route guard.",
-            "Check error response handling.",
-        ]
-    if words & {"database", "db", "foreign", "key", "constraint", "schema"}:
-        return [
-            "Check entity relationships.",
-            "Check migration/schema.",
-            "Check insert/update order.",
-            "Check foreign key values.",
-            "Check transaction/save logic.",
-        ]
+def _selected_ranked_files(task: TaskResult) -> list[RankedFile]:
+    selected: list[RankedFile] = []
+    seen: set[str] = set()
+    for ranked in [*task.primary_files, *task.supporting_files]:
+        if ranked.file.relative_path in seen:
+            continue
+        seen.add(ranked.file.relative_path)
+        selected.append(ranked)
+    return selected
+
+
+def _entry_reason(ranked: RankedFile) -> str:
+    if ranked.reasons:
+        return ranked.reasons[0].rstrip(".")
+    name = Path(ranked.file.relative_path).name
+    return f"{name} is the highest-ranked direct match"
+
+
+def _entry_points(task: TaskResult) -> list[str]:
+    selected = _selected_ranked_files(task)
+    if not selected:
+        return ["- No strong entry points were found by the ranking pass."]
+    lines: list[str] = []
+    for ranked in selected[:3]:
+        lines.append(f"- `{ranked.file.relative_path}` — score {ranked.score}; {_entry_reason(ranked)}.")
+    return lines
+
+
+def _file_section(packet_file: PacketFile) -> list[str]:
+    file = packet_file.ranked.file
+    language = _code_fence_language(file.language)
+    fence = _code_fence(packet_file.content)
+    suffix = " (truncated to fit packet budget)" if packet_file.truncated else ""
     return [
-        "Start with the highest-ranked file.",
-        "Trace the flow through related services/components.",
-        "Use the compressed error log to identify the failure point.",
-        "Modify the smallest number of files needed.",
-        "Add or update tests if available.",
+        f"### {file.relative_path}{suffix}",
+        "",
+        f"{fence}{language}",
+        packet_file.content.rstrip(),
+        fence,
+        "",
     ]
 
 
-def generate_packet(scan: ScanResult, task: TaskResult, log_summary: LogSummary | None = None, output_path: Path | None = None) -> tuple[Path, int]:
-    selected = task.ranked_files[:5]
-    contexts = [extract_context(item.file, task.keywords, log_summary) for item in selected]
-    packet_tokens = sum(context.estimated_tokens for context in contexts)
-    savings = percent_savings(packet_tokens, scan.total_estimated_tokens)
-    output_path = output_path or Path.cwd() / "context_packet.md"
-
-    lines: list[str] = [
+def _base_lines(task: TaskResult) -> list[str]:
+    return [
         "# RepoTrim Context Packet",
         "",
         "## Task",
         "",
         task.task_description,
         "",
-        "## Purpose",
+        "## Entry points",
         "",
-        "Use this packet as focused context for an AI coding agent. The goal is to solve the task without sending the entire repository.",
+        *_entry_points(task),
         "",
-        "## Token Estimate",
+        "## Relevant files with full contents",
         "",
-        f"- Full repo estimate: {scan.total_estimated_tokens:,} tokens",
-        f"- Selected packet estimate: {packet_tokens:,} tokens",
-        f"- Estimated savings: {savings:.1f}%",
-        "",
-        "## Relevant Files",
-        "",
-        "| Rank | File | Score | Why Included |",
-        "| --- | --- | ---: | --- |",
     ]
-    for index, ranked in enumerate(selected, start=1):
-        why = "; ".join(ranked.reasons[:4]) or "ranked by task relevance"
-        lines.append(f"| {index} | `{ranked.file.relative_path}` | {ranked.score} | {why} |")
 
-    lines.extend(["", "## Error Log Summary", ""])
-    if log_summary:
-        lines.append("### Main Important Lines")
-        lines.extend(f"- {line}" for line in log_summary.important_lines[:20])
-        lines.extend(["", "### Mentioned Files"])
-        lines.extend(f"- {file}" for file in log_summary.mentioned_files or ["None detected"])
-        lines.extend(["", "### Error Codes"])
-        lines.extend(f"- {code}" for code in log_summary.error_codes or ["None detected"])
-    else:
-        lines.append("No error log was provided.")
 
-    lines.extend(["", "## Relevant Code Context", ""])
-    for context in contexts:
-        fence = _code_fence_language(context.language)
+def _semantic_chunk_lines(task: TaskResult) -> list[str]:
+    if not task.semantic_chunks:
+        return []
+    lines = ["## Top semantic chunks", ""]
+    for match in task.semantic_chunks[:8]:
+        fence = _code_fence(match.text)
+        label = match.symbol or f"lines {match.start_line}-{match.end_line}"
         lines.extend(
             [
-                f"### File: {context.relative_path}",
+                f"### {match.file_path}::{label}",
                 "",
-                f"- Estimated tokens: {context.estimated_tokens:,}",
-                f"- Included as: {context.mode}",
+                f"- Kind: {match.kind}",
+                f"- Lines: {match.start_line}-{match.end_line}",
+                f"- Similarity: {match.similarity:.3f}",
                 "",
-                f"```{fence}",
-                context.content.rstrip(),
-                "```",
+                fence,
+                match.text.rstrip(),
+                fence,
                 "",
             ]
         )
+    return lines
 
-    lines.extend(["## Suggested Investigation Steps", ""])
-    lines.extend(f"- {step}" for step in investigation_steps(task.keywords))
-    lines.extend(
-        [
-            "",
-            "## Constraints for the AI Coding Agent",
-            "",
-            "- Do not modify unrelated files unless necessary.",
-            "- Prefer minimal changes.",
-            "- Preserve existing public APIs unless the task requires changing them.",
-            "- Explain any extra files you need before using them.",
-            "- If context is missing, ask for the specific missing file instead of guessing.",
-            "",
-            "## Excluded Context",
-            "",
-            "- node_modules",
-            "- dist",
-            "- build",
-            "- package-lock.json",
-            "- unrelated low-score files",
-        ]
-    )
 
-    output_path.write_text("\n".join(lines).rstrip() + "\n", encoding="utf-8")
-    return output_path, packet_tokens
+def _closing_lines(task: TaskResult) -> list[str]:
+    return [
+        "## One-shot prompt",
+        "",
+        f"Given the context above, implement the following: {task.task_description}. Make minimal changes. Return only the modified files with their full contents.",
+    ]
+
+
+def _render(task: TaskResult, packet_files: list[PacketFile]) -> str:
+    lines = _base_lines(task)
+    if packet_files:
+        for packet_file in packet_files:
+            lines.extend(_file_section(packet_file))
+    else:
+        lines.extend(["No primary or supporting files were selected.", ""])
+    lines.extend(_semantic_chunk_lines(task))
+    lines.extend(_closing_lines(task))
+    return "\n".join(lines).rstrip() + "\n"
+
+
+def _truncate_to_tokens(content: str, max_tokens: int, packet_budget: int) -> str:
+    if max_tokens <= 0:
+        return ""
+    max_chars = max(0, max_tokens * 4)
+    if len(content) <= max_chars:
+        return content
+    marker = f"\n\n[... truncated to keep context_packet.md under {packet_budget:,} tokens ...]"
+    keep_chars = max(0, max_chars - len(marker))
+    return content[:keep_chars].rstrip() + marker
+
+
+def _build_packet_files(task: TaskResult, max_tokens: int | None = None) -> list[PacketFile]:
+    packet_budget = max_tokens or config.MAX_CONTEXT_PACKET_TOKENS
+
+    def file_content(ranked: RankedFile) -> str:
+        text = read_text_safely(Path(ranked.file.path)) or ""
+        return text.replace("\r\n", "\n").replace("\r", "\n")
+
+    primary = [PacketFile(ranked, file_content(ranked)) for ranked in task.primary_files]
+    supporting = [PacketFile(ranked, file_content(ranked)) for ranked in task.supporting_files]
+    packet_files = [*primary]
+    rendered = _render(task, packet_files)
+    remaining = packet_budget - estimate_tokens(rendered)
+
+    for packet_file in supporting:
+        full_section_tokens = estimate_tokens("\n".join(_file_section(packet_file)))
+        if full_section_tokens <= remaining:
+            packet_files.append(packet_file)
+            remaining -= full_section_tokens
+            continue
+        if remaining <= 40:
+            continue
+        truncated_content = _truncate_to_tokens(packet_file.content, remaining - 40, packet_budget)
+        truncated = PacketFile(packet_file.ranked, truncated_content, truncated=True)
+        if estimate_tokens("\n".join(_file_section(truncated))) <= remaining:
+            packet_files.append(truncated)
+            remaining = 0
+        break
+    return packet_files
+
+
+def generate_packet(
+    scan: ScanResult,
+    task: TaskResult,
+    log_summary: LogSummary | None = None,
+    output_path: Path | None = None,
+    max_tokens: int | None = None,
+) -> tuple[Path, int]:
+    """Write .repotrim/context_packet.md for the ranked task result."""
+    del log_summary
+    output_path = output_path or ensure_cache_dir(Path(scan.repo_path)) / "context_packet.md"
+    packet_files = _build_packet_files(task, max_tokens=max_tokens)
+    text = _render(task, packet_files)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(text, encoding="utf-8", newline="\n")
+    return output_path, estimate_tokens(text)

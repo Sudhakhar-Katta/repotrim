@@ -13,7 +13,7 @@ IGNORED_DIRECTORIES = {
     "node_modules", "dist", "build", ".next", ".nuxt", "coverage",
     ".pytest_cache", ".mypy_cache", ".ruff_cache", ".idea", ".vscode",
     ".install-test", ".pytest-tmp",
-    "bin", "obj", "target", "out", ".cache",
+    "bin", "obj", "target", "out", ".cache", ".angular",
 }
 
 
@@ -31,7 +31,7 @@ def ignore_reason(path: Path, repo_path: Path, *, is_dir: bool | None = None) ->
         return "outside repository"
 
     parts = [part.lower() for part in relative.parts]
-    ignored_part = next((part for part in parts if part in IGNORED_DIRECTORIES), None)
+    ignored_part = next((part for part in parts if part in IGNORED_DIRECTORIES or part.startswith(".pytest-")), None)
     if ignored_part:
         return f'inside ignored directory "{ignored_part}"'
     generated_part = next((part for part in parts if part.endswith(".egg-info")), None)
@@ -40,14 +40,14 @@ def ignore_reason(path: Path, repo_path: Path, *, is_dir: bool | None = None) ->
 
     name = path.name
     lower_name = name.lower()
-    if lower_name.startswith(".env") or lower_name in {"credentials.json", "secret.json", "secrets.json"} or path.suffix.lower() in {".key", ".pem"}:
+    if (lower_name.startswith(".env") and lower_name != ".env.example") or lower_name in {"credentials.json", "secret.json", "secrets.json"} or path.suffix.lower() in {".key", ".pem"}:
         return "secret-looking path"
 
     if is_dir is True or (is_dir is None and path.is_dir()):
         return None
     if any(fnmatch.fnmatch(name, pattern) for pattern in config.IGNORED_FILE_PATTERNS):
         return "ignored file pattern"
-    if path.suffix.lower() not in config.SUPPORTED_EXTENSIONS:
+    if path.suffix.lower() not in config.SUPPORTED_EXTENSIONS and lower_name not in config.SUPPORTED_FILENAMES:
         return "unsupported extension"
     try:
         if path.stat().st_size > config.MAX_FILE_SIZE_BYTES:

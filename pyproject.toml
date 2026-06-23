@@ -7,14 +7,20 @@ name = "repotrim"
 version = "0.1.0"
 description = "Create minimal context packets for AI coding agents."
 requires-python = ">=3.10"
+license = "MIT"
 dependencies = [
     "rich>=13",
     "typer>=0.9",
+]
+
+[project.optional-dependencies]
+semantic = [
+    "sentence-transformers>=2.7",
 ]
 
 [project.scripts]
 repotrim = "repotrim.main:app"
 
 [tool.setuptools]
-packages = ["repotrim"]
+packages = ["repotrim", "repotrim.agents"]
 package-dir = { repotrim = "." }

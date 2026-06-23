@@ -56,6 +56,24 @@ SUPPORTED_EXTENSIONS = {
     ".toml",
     ".ini",
     ".cfg",
+    ".vue",
+    ".svelte",
+    ".kt",
+    ".kts",
+    ".swift",
+    ".dart",
+    ".sh",
+    ".bash",
+    ".zsh",
+    ".ps1",
+    ".xml",
+    ".gradle",
+    ".properties",
+    ".proto",
+    ".graphql",
+    ".gql",
+    ".prisma",
+    ".csproj",
 }
 
 LANGUAGE_BY_EXTENSION = {
@@ -86,6 +104,24 @@ LANGUAGE_BY_EXTENSION = {
     ".toml": "toml",
     ".ini": "text",
     ".cfg": "text",
+    ".vue": "vue",
+    ".svelte": "svelte",
+    ".kt": "kotlin",
+    ".kts": "kotlin",
+    ".swift": "swift",
+    ".dart": "dart",
+    ".sh": "shell",
+    ".bash": "shell",
+    ".zsh": "shell",
+    ".ps1": "powershell",
+    ".xml": "xml",
+    ".gradle": "gradle",
+    ".properties": "text",
+    ".proto": "protobuf",
+    ".graphql": "graphql",
+    ".gql": "graphql",
+    ".prisma": "prisma",
+    ".csproj": "xml",
 }
 
 STOP_WORDS = {
@@ -132,6 +168,25 @@ KEYWORD_VARIANTS = {
     "payments": {"payment", "payments"},
     "user": {"user", "users"},
     "users": {"user", "users"},
+    "rbac": {"rbac", "role", "roles", "permission", "permissions", "authorization", "authorize", "access", "policy", "policies", "guard", "guards"},
+    "access": {"access", "authorization", "authorize", "permission", "permissions", "role", "roles", "guard", "guards", "policy", "policies"},
+    "accessing": {"access", "authorization", "authorize", "permission", "permissions", "role", "roles", "guard", "guards", "policy", "policies"},
+    "role": {"role", "roles", "rbac", "permission", "permissions"},
+    "roles": {"role", "roles", "rbac", "permission", "permissions"},
+    "permission": {"permission", "permissions", "authorize", "authorization", "rbac"},
+    "permissions": {"permission", "permissions", "authorize", "authorization", "rbac"},
+    "tool": {"tool", "tools"},
+    "tools": {"tool", "tools"},
+}
+
+SUPPORTED_FILENAMES = {
+    "dockerfile",
+    "makefile",
+    "procfile",
+    "gemfile",
+    "rakefile",
+    "jenkinsfile",
+    ".env.example",
 }
 
 LOG_IMPORTANT_PATTERNS = (
@@ -175,3 +230,4 @@ MAX_RANKED_FILES = 8
 SNIPPET_LINE_WINDOW = 15
 SMALL_FILE_TOKEN_LIMIT = 1200
 MAX_SNIPPET_TOKENS_PER_FILE = 3000
+MAX_CONTEXT_PACKET_TOKENS = 18000

@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
+from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -44,11 +46,30 @@ def categorize_file(relative_path: str, extension: str) -> str:
     name = Path(relative_path).name.lower()
     if "test" in name or "tests" in parts or "test" in parts or name.startswith("spec"):
         return "test"
-    if name in {"requirements.txt", "pyproject.toml", "setup.py", "setup.cfg", "tox.ini"} or extension in {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg"}:
+    if name in {"requirements.txt", "pyproject.toml", "setup.py", "setup.cfg", "tox.ini", ".env.example", "dockerfile", "makefile"} or extension in {".json", ".yaml", ".yml", ".toml", ".ini", ".cfg", ".csproj"}:
         return "config"
     if extension == ".md":
         return "docs"
     return "source"
+
+
+def find_repo_root(start_path: Path) -> Path:
+    """Find the containing Git root, falling back to the requested directory."""
+    start_path = start_path.resolve()
+    if start_path.is_file():
+        start_path = start_path.parent
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(start_path), "rev-parse", "--show-toplevel"],
+            check=True,
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return start_path
+    root = Path(completed.stdout.strip())
+    return root.resolve() if root.is_dir() else start_path
 
 
 def read_text_safely(path: Path) -> str | None:
@@ -82,10 +103,23 @@ def extract_symbols(text: str, language: str) -> list[str]:
     return list(dict.fromkeys(symbols))[:80]
 
 
+def extract_repo_hints(text: str) -> tuple[list[str], list[str]]:
+    imports: list[str] = []
+    comments: list[str] = []
+    for line in text.splitlines()[:120]:
+        stripped = line.strip()
+        if re.match(r"^(from\s+\S+\s+import|import\s+|using\s+|require\(|const\s+.+?=\s*require\(|import\s+.+?from\s+)", stripped):
+            imports.append(stripped[:240])
+        if stripped.startswith(("#", "//", "/*", "*", "<!--")):
+            comments.append(stripped[:240])
+    return imports[:30], comments[:20]
+
+
 def make_file_info(path: Path, repo_path: Path, text: str) -> FileInfo:
     extension = path.suffix.lower()
     language = config.LANGUAGE_BY_EXTENSION.get(extension, "text")
     lines = text.splitlines()
+    imports, comments = extract_repo_hints(text)
     relative_path = path.relative_to(repo_path).as_posix()
     return FileInfo(
         path=str(path.resolve()),
@@ -100,13 +134,22 @@ def make_file_info(path: Path, repo_path: Path, text: str) -> FileInfo:
         modified_time=path.stat().st_mtime,
         category=categorize_file(relative_path, extension),
         reason="supported readable text file",
+        imports=imports,
+        comments=comments,
     )
 
 
 def scan_repo(repo_path: Path) -> ScanResult:
     repo_path = repo_path.resolve()
+    if not repo_path.exists():
+        raise ValueError(f"Repository path does not exist: {repo_path}")
+    if not repo_path.is_dir():
+        raise ValueError(f"Repository path is not a directory: {repo_path}")
     files: list[FileInfo] = []
     ignored: list[IgnoredPath] = []
+    files_discovered = 0
+    files_unreadable = 0
+    extensions: Counter[str] = Counter()
 
     for root, dirnames, filenames in os.walk(repo_path):
         root_path = Path(root)
@@ -122,7 +165,10 @@ def scan_repo(repo_path: Path) -> ScanResult:
         dirnames[:] = kept_dirs
 
         for filename in filenames:
+            files_discovered += 1
             path = root_path / filename
+            extension = path.suffix.lower() or "(none)"
+            extensions[extension] += 1
             reason = should_ignore_path(path, repo_path)
             if reason:
                 relative = path.relative_to(repo_path).as_posix()
@@ -130,6 +176,7 @@ def scan_repo(repo_path: Path) -> ScanResult:
                 continue
             text = read_text_safely(path)
             if text is None:
+                files_unreadable += 1
                 relative = path.relative_to(repo_path).as_posix()
                 ignored.append(IgnoredPath(path=str(path.resolve()), relative_path=relative, reason="binary or unreadable"))
                 continue
@@ -143,6 +190,10 @@ def scan_repo(repo_path: Path) -> ScanResult:
         total_estimated_tokens=sum(file.estimated_tokens for file in files),
         files=files,
         ignored=ignored,
+        current_working_directory=str(Path.cwd().resolve()),
+        files_discovered=files_discovered,
+        extensions_found=dict(sorted(extensions.items())),
+        files_unreadable=files_unreadable,
     )
     write_json(ensure_cache_dir(repo_path) / "scan.json", result.to_dict())
     return result
